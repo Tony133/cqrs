@@ -1,3 +1,6 @@
+/**
+ * @publicApi
+ */
 export class InvalidSagaException extends Error {
   constructor() {
     super(

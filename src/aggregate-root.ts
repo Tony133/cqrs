@@ -6,6 +6,9 @@ import { Type } from '@nestjs/common';
 const INTERNAL_EVENTS = Symbol();
 const IS_AUTO_COMMIT_ENABLED = Symbol();
 
+/**
+ * @publicApi
+ */
 export abstract class AggregateRoot<EventBase extends IEvent = IEvent> {
   public [IS_AUTO_COMMIT_ENABLED] = false;
   private readonly [INTERNAL_EVENTS]: EventBase[] = [];

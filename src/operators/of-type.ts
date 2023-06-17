@@ -4,6 +4,8 @@ import { filter } from 'rxjs/operators';
 import { IEvent } from '../interfaces';
 
 /**
+ * @publicApi
+ * 
  * Filter values depending on their instance type (comparison is made
  * using native `instanceof`).
  *

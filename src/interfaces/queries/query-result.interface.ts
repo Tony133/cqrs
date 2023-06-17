@@ -1,1 +1,4 @@
+/**
+ * @publicApi
+ */
 export interface IQueryResult {}

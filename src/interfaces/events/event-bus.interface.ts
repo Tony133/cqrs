@@ -1,5 +1,8 @@
 import { IEvent } from './event.interface';
 
+/**
+ * @publicApi
+ */
 export interface IEventBus<EventBase extends IEvent = IEvent> {
   publish<T extends EventBase>(event: T);
   publishAll(events: EventBase[]);

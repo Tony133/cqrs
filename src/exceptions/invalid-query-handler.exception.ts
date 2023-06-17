@@ -1,3 +1,6 @@
+/**
+ * @publicApi
+ */
 export class InvalidQueryHandlerException extends Error {
   constructor() {
     super(

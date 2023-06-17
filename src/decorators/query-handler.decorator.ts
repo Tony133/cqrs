@@ -4,6 +4,8 @@ import { QUERY_HANDLER_METADATA, QUERY_METADATA } from './constants';
 import { v4 } from 'uuid';
 
 /**
+ * @publicApi
+ * 
  * Decorator that marks a class as a Nest query handler. A query handler
  * handles queries executed by your application code.
  *

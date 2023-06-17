@@ -6,6 +6,9 @@ import { IEvent } from './interfaces';
 import { QueryBus } from './query-bus';
 import { ExplorerService } from './services/explorer.service';
 
+/**
+ * @publicApi
+ */
 @Module({
   providers: [CommandBus, QueryBus, EventBus, EventPublisher, ExplorerService],
   exports: [CommandBus, QueryBus, EventBus, EventPublisher],

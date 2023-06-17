@@ -18,6 +18,9 @@ import { ObservableBus } from './utils/observable-bus';
 export type QueryHandlerType<QueryBase extends IQuery = IQuery,
   QueryResultBase extends IQueryResult = IQueryResult> = Type<IQueryHandler<QueryBase, QueryResultBase>>;
 
+/**
+ * @publicApi
+ */
 @Injectable()
 export class QueryBus<QueryBase extends IQuery = IQuery>
   extends ObservableBus<QueryBase>

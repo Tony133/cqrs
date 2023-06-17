@@ -4,6 +4,8 @@ import { EVENT_METADATA, EVENTS_HANDLER_METADATA } from './constants';
 import { v4 } from 'uuid';
 
 /**
+ * @publicApi
+ * 
  * Decorator that marks a class as a Nest event handler. An event handler
  * handles events executed by your application code.
  *

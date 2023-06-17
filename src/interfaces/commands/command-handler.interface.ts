@@ -1,5 +1,8 @@
 import { ICommand } from './command.interface';
 
+/**
+ * @publicApi
+ */
 export interface ICommandHandler<
   TCommand extends ICommand = any,
   TResult = any

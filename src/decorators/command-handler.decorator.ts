@@ -4,6 +4,8 @@ import { COMMAND_HANDLER_METADATA, COMMAND_METADATA } from './constants';
 import { v4 } from 'uuid';
 
 /**
+ * @publicApi
+ * 
  * Decorator that marks a class as a Nest command handler. A command handler
  * handles commands (actions) executed by your application code.
  *
