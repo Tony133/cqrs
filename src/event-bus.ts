@@ -1,23 +1,37 @@
-import { Injectable, Logger, OnModuleDestroy, Type } from '@nestjs/common';
-import { ModuleRef } from '@nestjs/core';
-import { Observable, Subscription, from } from 'rxjs';
-import { filter, mergeMap } from 'rxjs/operators';
-import { isFunction } from 'util';
-import { CommandBus } from './command-bus';
-import { EVENTS_HANDLER_METADATA, SAGA_METADATA } from './decorators/constants';
-import { InvalidSagaException } from './exceptions';
 import {
-  defaultGetEventId,
-  defaultReflectEventId,
-} from './helpers/default-get-event-id';
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  Optional,
+  Type,
+} from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper';
+import { Observable, Subscription, defer, of } from 'rxjs';
+import { catchError, filter, mergeMap } from 'rxjs/operators';
+import { CommandBus } from './command-bus';
+import { CQRS_MODULE_OPTIONS } from './constants';
+import { EVENTS_HANDLER_METADATA, SAGA_METADATA } from './decorators/constants';
+import {
+  InvalidSagaException,
+  UnsupportedSagaScopeException,
+} from './exceptions';
+import { defaultEventIdProvider } from './helpers/default-event-id-provider';
 import { DefaultPubSub } from './helpers/default-pubsub';
 import {
+  CqrsModuleOptions,
+  EventIdProvider,
+  ICommand,
   IEvent,
   IEventBus,
   IEventHandler,
   IEventPublisher,
   ISaga,
+  UnhandledExceptionInfo,
 } from './interfaces';
+import { AsyncContext } from './scopes';
+import { UnhandledExceptionBus } from './unhandled-exception-bus';
 import { ObservableBus } from './utils';
 
 export type EventHandlerType<EventBase extends IEvent = IEvent> = Type<
@@ -32,7 +46,7 @@ export class EventBus<EventBase extends IEvent = IEvent>
   extends ObservableBus<EventBase>
   implements IEventBus<EventBase>, OnModuleDestroy
 {
-  protected getEventId: (event: EventBase) => string | null;
+  protected eventIdProvider: EventIdProvider<EventBase>;
   protected readonly subscriptions: Subscription[];
 
   private _publisher: IEventPublisher<EventBase>;
@@ -41,17 +55,36 @@ export class EventBus<EventBase extends IEvent = IEvent>
   constructor(
     private readonly commandBus: CommandBus,
     private readonly moduleRef: ModuleRef,
+    private readonly unhandledExceptionBus: UnhandledExceptionBus,
+    @Optional()
+    @Inject(CQRS_MODULE_OPTIONS)
+    private readonly options?: CqrsModuleOptions,
   ) {
     super();
     this.subscriptions = [];
-    this.getEventId = defaultGetEventId;
-    this.useDefaultPublisher();
+    this.eventIdProvider =
+      this.options?.eventIdProvider ?? defaultEventIdProvider;
+
+    if (this.options?.eventPublisher) {
+      this._publisher = this.options.eventPublisher;
+    } else {
+      this.useDefaultPublisher();
+    }
   }
 
+  /**
+   * Returns the publisher.
+   * Default publisher is `DefaultPubSub` (in memory).
+   */
   get publisher(): IEventPublisher<EventBase> {
     return this._publisher;
   }
 
+  /**
+   * Sets the publisher.
+   * Default publisher is `DefaultPubSub` (in memory).
+   * @param _publisher The publisher to set.
+   */
   set publisher(_publisher: IEventPublisher<EventBase>) {
     this._publisher = _publisher;
   }
@@ -60,71 +93,235 @@ export class EventBus<EventBase extends IEvent = IEvent>
     this.subscriptions.forEach((subscription) => subscription.unsubscribe());
   }
 
-  publish<T extends EventBase>(event: T) {
-    return this._publisher.publish(event);
-  }
-
-  publishAll<T extends EventBase>(events: T[]) {
-    if (this._publisher.publishAll) {
-      return this._publisher.publishAll(events);
+  /**
+   * Publishes an event.
+   * @param event The event to publish.
+   */
+  publish<TEvent extends EventBase>(event: TEvent): any;
+  /**
+   * Publishes an event.
+   * @param event The event to publish.
+   * @param asyncContext Async context
+   */
+  publish<TEvent extends EventBase>(
+    event: TEvent,
+    asyncContext: AsyncContext,
+  ): any;
+  /**
+   * Publishes an event.
+   * @param event The event to publish.
+   * @param dispatcherContext Dispatcher context
+   */
+  publish<TEvent extends EventBase, TContext = unknown>(
+    event: TEvent,
+    dispatcherContext: TContext,
+  ): any;
+  /**
+   * Publishes an event.
+   * @param event The event to publish.
+   * @param dispatcherContext Dispatcher context
+   * @param asyncContext Async context
+   */
+  publish<TEvent extends EventBase, TContext = unknown>(
+    event: TEvent,
+    dispatcherContext: TContext,
+    asyncContext: AsyncContext,
+  ): any;
+  /**
+   * Publishes an event.
+   * @param event The event to publish.
+   * @param dispatcherOrAsyncContext Dispatcher context or async context
+   * @param asyncContext Async context
+   */
+  publish<TEvent extends EventBase, TContext = unknown>(
+    event: TEvent,
+    dispatcherOrAsyncContext?: TContext | AsyncContext,
+    asyncContext?: AsyncContext,
+  ) {
+    if (!asyncContext && dispatcherOrAsyncContext instanceof AsyncContext) {
+      asyncContext = dispatcherOrAsyncContext;
+      dispatcherOrAsyncContext = undefined;
     }
-    return (events || []).map((event) => this._publisher.publish(event));
-  }
 
-  bind(handler: IEventHandler<EventBase>, id: string) {
-    const stream$ = id ? this.ofEventId(id) : this.subject$;
-    const subscription = stream$
-      .pipe(mergeMap((event) => from(Promise.resolve(handler.handle(event)))))
-      .subscribe({
-        error: (error) => {
-          this._logger.error(
-            `"${handler.constructor.name}" has thrown an unhandled exception.`,
-            error,
-          );
-        },
-      });
-    this.subscriptions.push(subscription);
-  }
-
-  registerSagas(types: Type<unknown>[] = []) {
-    const sagas = types
-      .map((target) => {
-        const metadata = Reflect.getMetadata(SAGA_METADATA, target) || [];
-        const instance = this.moduleRef.get(target, { strict: false });
-        if (!instance) {
-          throw new InvalidSagaException();
-        }
-        return metadata.map((key: string) => instance[key].bind(instance));
-      })
-      .reduce((a, b) => a.concat(b), []);
-
-    sagas.forEach((saga) => this.registerSaga(saga));
-  }
-
-  register(handlers: EventHandlerType<EventBase>[] = []) {
-    handlers.forEach((handler) => this.registerHandler(handler));
-  }
-
-  protected registerHandler(handler: EventHandlerType<EventBase>) {
-    const instance = this.moduleRef.get(handler, { strict: false });
-    if (!instance) {
-      return;
+    if (asyncContext) {
+      asyncContext.attachTo(event);
     }
-    const events = this.reflectEvents(handler);
-    events.map((event) =>
-      this.bind(
-        instance as IEventHandler<EventBase>,
-        defaultReflectEventId(event),
-      ),
+
+    return this._publisher.publish(
+      event,
+      dispatcherOrAsyncContext,
+      asyncContext,
     );
   }
 
+  /**
+   * Publishes multiple events.
+   * @param events The events to publish.
+   */
+  publishAll<TEvent extends EventBase>(events: TEvent[]): any;
+  /**
+   * Publishes multiple events.
+   * @param events The events to publish.
+   * @param asyncContext Async context
+   */
+  publishAll<TEvent extends EventBase>(
+    events: TEvent[],
+    asyncContext: AsyncContext,
+  ): any;
+  /**
+   * Publishes multiple events.
+   * @param events The events to publish.
+   * @param dispatcherContext Dispatcher context
+   */
+  publishAll<TEvent extends EventBase, TContext = unknown>(
+    events: TEvent[],
+    dispatcherContext: TContext,
+  ): any;
+  /**
+   * Publishes multiple events.
+   * @param events The events to publish.
+   * @param dispatcherContext Dispatcher context
+   * @param asyncContext Async context
+   */
+  publishAll<TEvent extends EventBase, TContext = unknown>(
+    events: TEvent[],
+    dispatcherContext: TContext,
+    asyncContext: AsyncContext,
+  ): any;
+  /**
+   * Publishes multiple events.
+   * @param events The events to publish.
+   * @param dispatcherOrAsyncContext Dispatcher context or async context
+   * @param asyncContext Async context
+   */
+  publishAll<TEvent extends EventBase, TContext = unknown>(
+    events: TEvent[],
+    dispatcherOrAsyncContext?: TContext | AsyncContext,
+    asyncContext?: AsyncContext,
+  ) {
+    if (!asyncContext && dispatcherOrAsyncContext instanceof AsyncContext) {
+      asyncContext = dispatcherOrAsyncContext;
+      dispatcherOrAsyncContext = undefined;
+    }
+
+    if (asyncContext) {
+      events.forEach((event) => {
+        if (AsyncContext.isAttached(event)) {
+          return;
+        }
+        asyncContext.attachTo(event);
+      });
+    }
+
+    if (this._publisher.publishAll) {
+      return this._publisher.publishAll(
+        events,
+        dispatcherOrAsyncContext,
+        asyncContext,
+      );
+    }
+    return (events || []).map((event) =>
+      this._publisher.publish(event, dispatcherOrAsyncContext, asyncContext),
+    );
+  }
+
+  bind(handler: InstanceWrapper<IEventHandler<EventBase>>, id: string) {
+    const stream$ = id ? this.ofEventId(id) : this.subject$;
+
+    const deferred = handler.isDependencyTreeStatic()
+      ? (event: EventBase) => () => {
+          return Promise.resolve(handler.instance.handle(event));
+        }
+      : (event: EventBase) => async () => {
+          const asyncContext = AsyncContext.of(event) ?? new AsyncContext();
+          const instance = await this.moduleRef.resolve(
+            handler.metatype!,
+            asyncContext.id,
+            {
+              strict: false,
+            },
+          );
+          return instance.handle(event);
+        };
+
+    const subscription = stream$
+      .pipe(
+        mergeMap((event) =>
+          defer(deferred(event)).pipe(
+            catchError((error) => {
+              if (this.options?.rethrowUnhandled) {
+                throw error;
+              }
+              const unhandledError = this.mapToUnhandledErrorInfo(event, error);
+              this.unhandledExceptionBus.publish(unhandledError);
+              this._logger.error(
+                `"${handler.constructor.name}" has thrown an unhandled exception.`,
+                error,
+              );
+              return of();
+            }),
+          ),
+        ),
+      )
+      .subscribe();
+    this.subscriptions.push(subscription);
+  }
+
+  registerSagas(wrappers: InstanceWrapper<object>[] = []) {
+    const sagas = wrappers
+      .map((wrapper) => {
+        const { metatype: target } = wrapper;
+        const metadata = Reflect.getMetadata(SAGA_METADATA, target!) ?? [];
+
+        if (!wrapper.isDependencyTreeStatic()) {
+          throw new UnsupportedSagaScopeException();
+        }
+        const instance = wrapper.instance;
+        return metadata.map((key: string) => {
+          const sagaFn = instance[key].bind(instance);
+          Object.defineProperty(sagaFn, 'name', {
+            value: key,
+            writable: false,
+            configurable: false,
+          });
+
+          return sagaFn;
+        });
+      })
+      .reduce((a, b) => a.concat(b), [] as ISaga<EventBase>[]);
+
+    sagas.forEach((saga: ISaga<EventBase>) => this.registerSaga(saga));
+  }
+
+  register(handlers: InstanceWrapper<IEventHandler<EventBase>>[] = []) {
+    handlers.forEach((handler) => this.registerHandler(handler));
+  }
+
+  protected registerHandler(
+    handler: InstanceWrapper<IEventHandler<EventBase>>,
+  ) {
+    const typeRef = handler.metatype as Type<IEventHandler<EventBase>>;
+    const events = this.reflectEvents(typeRef);
+    events.forEach((event) => {
+      const eventId = this.eventIdProvider.getEventId(event);
+      this.bind(handler, eventId!);
+    });
+  }
+
   protected ofEventId(id: string) {
-    return this.subject$.pipe(filter((event) => this.getEventId(event) === id));
+    return this.subject$.pipe(
+      filter((event) => {
+        const { constructor } = Object.getPrototypeOf(event);
+        if (!constructor) {
+          return false;
+        }
+        return this.eventIdProvider.getEventId(constructor) === id;
+      }),
+    );
   }
 
   protected registerSaga(saga: ISaga<EventBase>) {
-    if (!isFunction(saga)) {
+    if (typeof saga !== 'function') {
       throw new InvalidSagaException();
     }
     const stream$ = saga(this);
@@ -135,27 +332,62 @@ export class EventBus<EventBase extends IEvent = IEvent>
     const subscription = stream$
       .pipe(
         filter((e) => !!e),
-        mergeMap((command) => from(this.commandBus.execute(command))),
-      )
-      .subscribe({
-        error: (error) => {
+        catchError((error) => {
+          if (this.options?.rethrowUnhandled) {
+            throw error;
+          }
+
+          const unhandledError = this.mapToUnhandledErrorInfo(saga.name, error);
+          this.unhandledExceptionBus.publish(unhandledError);
           this._logger.error(
-            `Command handler which execution was triggered by Saga has thrown an unhandled exception.`,
+            `Saga "${saga.name}" has thrown an unhandled exception.`,
             error,
           );
-        },
-      });
+          return of();
+        }),
+        mergeMap((command) =>
+          defer(() => this.commandBus.execute(command)).pipe(
+            catchError((error) => {
+              if (this.options?.rethrowUnhandled) {
+                throw error;
+              }
+
+              const unhandledError = this.mapToUnhandledErrorInfo(
+                command,
+                error,
+              );
+              this.unhandledExceptionBus.publish(unhandledError);
+              this._logger.error(
+                `Command handler which execution was triggered by Saga has thrown an unhandled exception.`,
+                error,
+              );
+              return of();
+            }),
+          ),
+        ),
+      )
+      .subscribe();
 
     this.subscriptions.push(subscription);
   }
 
   private reflectEvents(
     handler: EventHandlerType<EventBase>,
-  ): FunctionConstructor[] {
+  ): Type<EventBase>[] {
     return Reflect.getMetadata(EVENTS_HANDLER_METADATA, handler);
   }
 
   private useDefaultPublisher() {
     this._publisher = new DefaultPubSub<EventBase>(this.subject$);
+  }
+
+  private mapToUnhandledErrorInfo(
+    eventOrCommand: IEvent | ICommand | string,
+    exception: unknown,
+  ): UnhandledExceptionInfo {
+    return {
+      cause: eventOrCommand,
+      exception,
+    };
   }
 }
