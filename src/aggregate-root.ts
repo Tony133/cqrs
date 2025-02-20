@@ -6,20 +6,15 @@ import { IEvent, IEventHandler } from './interfaces';
 const INTERNAL_EVENTS = Symbol();
 const IS_AUTO_COMMIT_ENABLED = Symbol();
 
-<<<<<<< HEAD
 /**
  * @publicApi
- */
-||||||| 91a9d50
-=======
-/**
+ *
  * Represents an aggregate root.
  * An aggregate root is an entity that represents a meaningful concept in the domain.
  * It is the root of an aggregate, which is a cluster of domain objects that can be treated as a single unit.
  *
  * @template EventBase The base type of the events.
  */
->>>>>>> master
 export abstract class AggregateRoot<EventBase extends IEvent = IEvent> {
   public [IS_AUTO_COMMIT_ENABLED] = false;
   private readonly [INTERNAL_EVENTS]: EventBase[] = [];
